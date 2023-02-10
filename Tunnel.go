@@ -25,9 +25,12 @@ type Tunnel struct {
 }
 
 func NewTunnel(lu, ru *url.URL) (t *Tunnel, err error) {
+	t = &Tunnel{
+		channels: make(map[int]chan void),
+	}
 	switch lu.Scheme {
 	case "http":
-		e, err := newHttpEndpoint(lu, t)
+		e, err := newHttpEndpoint(lu, t, true)
 		if err != nil {
 			return nil, err
 		}
@@ -43,13 +46,13 @@ func NewTunnel(lu, ru *url.URL) (t *Tunnel, err error) {
 	}
 	switch ru.Scheme {
 	case "http":
-		e, err := newHttpEndpoint(lu, t)
+		e, err := newHttpEndpoint(ru, t, false)
 		if err != nil {
 			return nil, err
 		}
 		t.rEndpoint = e
 	case "tcp":
-		e, err := newTcpEndpoint(lu, t)
+		e, err := newTcpEndpoint(ru, t)
 		if err != nil {
 			return nil, err
 		}
@@ -72,25 +75,32 @@ func (t *Tunnel) newConnection(lConn io.ReadWriteCloser) {
 	}
 	defer lConn.Close()
 	defer rConn.Close()
-	t.channels[t.cID] = make(chan void)
-	go t.pipe(lConn, rConn, t.cID)
-	go t.pipe(rConn, lConn, t.cID)
+	tid := t.cID
+	t.channels[tid] = make(chan void)
+	go t.pipe(lConn, rConn, tid)
+	go t.pipe(rConn, lConn, tid)
 	t.cID++
-	<-t.channels[t.cID]
+	<-t.channels[tid]
+	// log.Println(lConn.Close())
+	// log.Println(rConn.Close())
+	fmt.Println("Connection", tid, "Closed")
 }
 
 func (t *Tunnel) Errorf(id int, fmt string, v ...any) {
 	log.Printf(fmt, v...)
-	t.channels[id] <- void{}
+	t.closeConn(id)
 }
 
 func (t *Tunnel) pipe(src, dst io.ReadWriter, id int) {
 	buff := make([]byte, BUFF_SIZE)
 	for {
 		n, err := src.Read(buff)
-		if err != nil {
+		if err != nil && err != io.EOF {
 			t.Errorf(id, "Read failed '%s'\n", err)
 			return
+		}
+		if n == 0 {
+			t.closeConn(id)
 		}
 		b := buff[:n]
 		n, err = dst.Write(b)
@@ -99,6 +109,11 @@ func (t *Tunnel) pipe(src, dst io.ReadWriter, id int) {
 			return
 		}
 	}
+}
+
+func (t *Tunnel) closeConn(id int) error {
+	t.channels[id] <- void{}
+	return nil
 }
 
 func (t *Tunnel) Close() error {
